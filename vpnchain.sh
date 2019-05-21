@@ -46,7 +46,7 @@ mkdir -p $configs
 
 [ $UID != 0 ] && {
 	log error "Please run this script as root."
-	exit
+	exit 1
 }
 
 [ "$1" = "flush" ] && {
