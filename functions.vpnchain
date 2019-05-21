@@ -1,0 +1,86 @@
+#
+## Don't change anything bellow unless you know what you are doing
+#
+
+Escape="\033"; Black="${Escape}[30m"; Red="${Escape}[31m"; Green="${Escape}[32m"; Yellow="${Escape}[33m";
+Blue="${Escape}[34m"; Purple="${Escape}[35m"; Cyan="${Escape}[36m"; White="${Escape}[37m"; Reset="${Escape}[0m";
+
+get_ip() {
+	[ $1 ] && awk '$1 == "remote" { print $2; exit }' $1 || echo 0.0.0.0
+}
+
+get_configs() {
+	ls -1b $configs/*.ovpn | shuf
+}
+
+get_tun() {
+	id=0
+	while [ -d "/sys/class/net/tun$id" ]; do
+		(( id++ ))
+	done
+	echo "tun$id"
+}
+
+log() {
+	type=$1
+	shift
+
+	case "$type" in
+		"info")
+			echo -e "${Yellow}[$(date +"%T")] INFO: $@ ${Reset}"
+			;;
+		"error")
+			echo -e "${Red}[$(date +"%T")] ERROR: $@ ${Reset}"
+			;;
+		"success")
+			echo -e "${Green}[$(date +"%T")] INFO: $@ ${Reset}"
+			;;
+		default)
+			echo -e "${White}[$(date +"%T")] $@ ${Reset}"
+			;;
+	esac
+}
+
+firewall() {
+	mode=$1
+	shift
+
+	case "$mode" in
+		"setup")
+			iptables -C OUTPUT -o lo -j ACCEPT || iptables -I OUTPUT -o lo -j ACCEPT # Allow local traffic
+			iptables -C OUTPUT -o tun+ -j ACCEPT || iptables -I OUTPUT -o tun+ -j ACCEPT # Allow traffic by VPNs
+			iptables -P OUTPUT DROP # Deny the rest by default
+			;;
+		"flush")
+			iptables -P OUTPUT ACCEPT # Stop blocking non-VPN traffic (Dangerous! Will leak your real IP!)
+			;;
+	esac
+}
+
+# Loop to run while connected to make sure the chain is intact
+while_connected() {
+	log success "Chain fully connected."
+    (sleep 15; log info "Testing exit IP..."; log info "$(curl -s4 ifconfig.co)" &)
+	pkill -x -HUP tor 2>/dev/null # Reload Tor if running
+	while sleep 2; do
+		for tun in "${tun_array[@]}"; do
+			[ ! -d "/sys/class/net/$tun" ] && {
+				log error "$tun disconnected and broke the chain! Exiting..."
+				on_exit
+			}
+		done
+	done
+}
+
+on_exit() {
+	# Kill all VPN connections on script exit
+	log info "Terminating OpenVPN instances..."
+	killall -eq openvpn
+	while [ $(pgrep -xc openvpn) -gt 0 ]; do sleep 0.1; done
+	[ $killswitch -gt 0 ] && {
+		iptables -D OUTPUT -d $(get_ip ${config[0]}) -j ACCEPT
+		log info "Killswitch is enabled! Disable with sudo ./$(basename $0) flush"
+	} || [ $block_ipv6 -gt 0 ] && sysctl -qw net.ipv6.conf.all.disable_ipv6=0
+	log info "Goodbye. Stay safe."
+	exit 0
+}
